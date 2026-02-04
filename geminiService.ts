@@ -2,10 +2,10 @@
 import { GoogleGenAI } from "@google/genai";
 import { FeedbackData } from "./types";
 
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-
 export const analyzeFeedback = async (data: FeedbackData) => {
-  const ai = getAI();
+  // Inicialização direta conforme recomendações da SDK
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+  
   const prompt = `
     Analise o seguinte feedback de atendimento médico e gere uma resposta de agradecimento oficial.
     
@@ -36,6 +36,7 @@ export const analyzeFeedback = async (data: FeedbackData) => {
       }
     });
     
+    // Usando a propriedade .text conforme diretrizes
     let text = response.text || "Obrigado por sua avaliação!";
     
     if (!text.includes("Hospital Santa Filomena")) {

@@ -13,7 +13,15 @@ import 'jspdf-autotable';
 
 const STORAGE_KEY = 'hospital_santa_filomena_stats';
 const DASHBOARD_PASSWORD = '102530';
-const PROFESSIONALS = ["Dr. Elvy Soares", "Dr. Julio Cesar"];
+const PROFESSIONALS = [
+  "Dr. Elvy Soares", 
+  "Dr. Julio Cesar",
+  "Dr. Gerson Marques",
+  "Dr. Nagipe Sousa",
+  "Drª Gercilane",
+  "Dr. Ricardo Lages",
+  "Dr. Rafael Avelino"
+];
 
 const ProfessionalBtn: React.FC<{ 
   name: string; 
@@ -32,7 +40,7 @@ const ProfessionalBtn: React.FC<{
     <div className={`p-4 rounded-full ${isSelected ? 'bg-indigo-500 text-white' : (isDarkMode ? 'bg-neutral-800 text-neutral-500' : 'bg-slate-100 text-slate-400')}`}>
       <UserRound className="w-8 h-8" />
     </div>
-    <span className={`text-sm font-bold ${isSelected ? (isDarkMode ? 'text-indigo-300' : 'text-indigo-700') : (isDarkMode ? 'text-neutral-400' : 'text-slate-600')}`}>{name}</span>
+    <span className={`text-sm font-bold leading-tight ${isSelected ? (isDarkMode ? 'text-indigo-300' : 'text-indigo-700') : (isDarkMode ? 'text-neutral-400' : 'text-slate-600')}`}>{name}</span>
   </button>
 );
 
@@ -299,9 +307,9 @@ const App: React.FC = () => {
 
       case AppStep.PROFESSIONAL:
         return (
-          <div className="space-y-8 py-4 animate-in slide-in-from-right duration-500">
+          <div className="space-y-6 py-4 animate-in slide-in-from-right duration-500 flex flex-col h-full max-h-[60vh]">
             <h2 className={`text-2xl font-bold text-center ${isDarkMode ? 'text-neutral-100' : 'text-slate-800'}`}>Qual profissional realizou o atendimento?</h2>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-4 overflow-y-auto px-2 py-4 no-scrollbar">
               {PROFESSIONALS.map(name => (
                 <ProfessionalBtn 
                   key={name}
@@ -315,7 +323,7 @@ const App: React.FC = () => {
             <button 
               disabled={!feedback.professional}
               onClick={handleNext}
-              className={`w-full py-4 rounded-2xl font-bold transition-all ${feedback.professional ? 'bg-indigo-600 text-white shadow-lg active:scale-95' : (isDarkMode ? 'bg-neutral-800 text-neutral-600' : 'bg-gray-100 text-gray-400 cursor-not-allowed')}`}
+              className={`w-full py-4 mt-4 rounded-2xl font-bold transition-all shrink-0 ${feedback.professional ? 'bg-indigo-600 text-white shadow-lg active:scale-95' : (isDarkMode ? 'bg-neutral-800 text-neutral-600' : 'bg-gray-100 text-gray-400 cursor-not-allowed')}`}
             >
               Continuar
             </button>
