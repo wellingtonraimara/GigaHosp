@@ -31,6 +31,15 @@ const EMOJIS = [
   { char: '🤩', label: 'Incrível', range: [9, 10], default: 10 },
 ];
 
+interface DashboardStats {
+  total: number;
+  avg: string;
+  nps: number;
+  promoters: number;
+  detractors: number;
+  profCounts: Record<string, number>;
+}
+
 const ProfessionalBtn: React.FC<{ 
   name: string; 
   isSelected: boolean; 
@@ -76,7 +85,7 @@ const App: React.FC = () => {
 
   // Theme State
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    const savedTheme = localStorage.getItem('theme');
+    const savedTheme = typeof localStorage !== 'undefined' ? localStorage.getItem('theme') : 'light';
     return savedTheme === 'dark';
   });
 
@@ -186,9 +195,9 @@ const App: React.FC = () => {
   }, [history, filterStartDate, filterEndDate, filterProfessional]);
 
   // Stats Calculations
-  const stats = useMemo(() => {
+  const stats = useMemo<DashboardStats>(() => {
     const total = filteredHistory.length;
-    if (total === 0) return { avg: 0, nps: 0, promoters: 0, detractors: 0, profCounts: {} };
+    if (total === 0) return { total: 0, avg: '0', nps: 0, promoters: 0, detractors: 0, profCounts: {} };
 
     const sum = filteredHistory.reduce((acc, curr) => acc + (curr.nps || 0), 0);
     const promoters = filteredHistory.filter(h => (h.nps || 0) >= 9).length;
@@ -243,9 +252,20 @@ const App: React.FC = () => {
     doc.setFontSize(12);
     doc.setTextColor(0);
     doc.text('RESUMO EXECUTIVO', 20, 55);
-    const tableData = [['Total de Avaliações', stats.total.toString()], ['Nota Média Geral', `${stats.avg} / 10`], ['NPS (Net Promoter Score)', `${stats.nps}`], ['Promotores (9-10)', stats.promoters.toString()], ['Detratores (0-6)', stats.detractors.toString()]];
+    
+    // Fix: Access total safely
+    const totalCount = stats?.total ?? 0;
+    const tableData = [
+      ['Total de Avaliações', totalCount.toString()], 
+      ['Nota Média Geral', `${stats?.avg ?? '0'} / 10`], 
+      ['NPS (Net Promoter Score)', `${stats?.nps ?? 0}`], 
+      ['Promotores (9-10)', (stats?.promoters ?? 0).toString()], 
+      ['Detratores (0-6)', (stats?.detractors ?? 0).toString()]
+    ];
+    
     (doc as any).autoTable({ startY: 60, head: [['Métrica', 'Valor']], body: tableData, theme: 'striped', headStyles: { fillColor: [63, 81, 181] } });
-    const profData = Object.entries(stats.profCounts).map(([name, count]) => [name, count]);
+    
+    const profData = Object.entries(stats?.profCounts ?? {}).map(([name, count]) => [name, count]);
     if (profData.length > 0) {
       doc.text('ATENDIMENTOS POR PROFISSIONAL', 20, (doc as any).lastAutoTable.finalY + 15);
       (doc as any).autoTable({ startY: (doc as any).lastAutoTable.finalY + 20, head: [['Profissional', 'Total de Avaliações']], body: profData });
@@ -527,15 +547,15 @@ const App: React.FC = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-indigo-50 border-indigo-100'}`}>
                     <div className={`flex items-center gap-2 mb-2 ${isDarkMode ? 'text-indigo-400' : 'text-indigo-600'}`}><Users className="w-5 h-5" /><span className="text-[10px] font-black uppercase tracking-widest">Avaliações</span></div>
-                    <p className={`text-4xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-indigo-900'}`}>{stats.total}</p>
+                    <p className={`text-4xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-indigo-900'}`}>{stats?.total ?? 0}</p>
                   </div>
                   <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-emerald-50 border-emerald-100'}`}>
                     <div className={`flex items-center gap-2 mb-2 ${isDarkMode ? 'text-emerald-400' : 'text-emerald-600'}`}><TrendingUp className="w-5 h-5" /><span className="text-[10px] font-black uppercase tracking-widest">NPS Global</span></div>
-                    <p className={`text-4xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-emerald-900'}`}>{stats.nps}</p>
+                    <p className={`text-4xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-emerald-900'}`}>{stats?.nps ?? 0}</p>
                   </div>
                   <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-amber-50 border-amber-100'}`}>
                     <div className={`flex items-center gap-2 mb-2 ${isDarkMode ? 'text-amber-400' : 'text-amber-600'}`}><Star className="w-5 h-5" /><span className="text-[10px] font-black uppercase tracking-widest">Nota Média</span></div>
-                    <p className={`text-4xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-amber-900'}`}>{stats.avg}</p>
+                    <p className={`text-4xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-amber-900'}`}>{stats?.avg ?? '0'}</p>
                   </div>
                   <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-100'}`}>
                     <div className={`flex items-center gap-2 mb-2 ${isDarkMode ? 'text-neutral-500' : 'text-slate-400'}`}><Calendar className="w-5 h-5" /><span className="text-[10px] font-black uppercase tracking-widest">Período</span></div>
@@ -570,8 +590,11 @@ const App: React.FC = () => {
                     <h3 className={`text-lg font-black mb-8 ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>Performance por Médico</h3>
                     <div className="space-y-6">
                       {PROFESSIONALS.map((name) => {
-                        const count = stats.profCounts[name] || 0;
-                        const pct = stats.total > 0 ? Math.round((count / stats.total) * 100) : 0;
+                        // Fix: Correct indexing and safe access
+                        const profCounts = stats?.profCounts ?? {};
+                        const count = profCounts[name] || 0;
+                        const totalEvaluations = stats?.total ?? 0;
+                        const pct = totalEvaluations > 0 ? Math.round((count / totalEvaluations) * 100) : 0;
                         return (
                           <div key={name} className="flex items-center gap-5">
                             <span className={`text-xs font-black w-36 truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>{name}</span>
