@@ -4,15 +4,16 @@ import {
   MessageSquare, ChevronRight, CheckCircle2, ArrowLeft, 
   Loader2, Home, Star, BarChart3, Download, Users, 
   TrendingUp, Calendar, Trash2, Lock, ShieldCheck, UserRound,
-  Filter, X, Briefcase, Clock, Moon, Sun
+  Filter, X, Briefcase, Clock, Moon, Sun, AlertTriangle, Cloud, Check, FileText
 } from 'lucide-react';
 import { AppStep, FeedbackData } from './types';
 import { analyzeFeedback } from './geminiService';
+import { dataService } from './dataService';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 
-const STORAGE_KEY = 'hospital_santa_filomena_stats';
 const DASHBOARD_PASSWORD = '102530';
+const RESET_PASSWORD = '102530';
 const PROFESSIONALS = [
   "Dr. Elvy Soares", 
   "Dr. Julio Cesar",
@@ -64,6 +65,7 @@ const ProfessionalBtn: React.FC<{
 const App: React.FC = () => {
   const [step, setStep] = useState<AppStep>(AppStep.WELCOME);
   const [history, setHistory] = useState<FeedbackData[]>([]);
+  const [isLoadingData, setIsLoadingData] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackData>({
     professional: null,
     nps: null,
@@ -76,23 +78,32 @@ const App: React.FC = () => {
   const [passwordValue, setPasswordValue] = useState('');
   const [passwordError, setPasswordError] = useState(false);
 
-  // Filter States
+  const [isPromptingReset, setIsPromptingReset] = useState(false);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [resetPasswordError, setResetPasswordError] = useState(false);
+
   const [filterStartDate, setFilterStartDate] = useState('');
   const [filterEndDate, setFilterEndDate] = useState('');
   const [filterProfessional, setFilterProfessional] = useState<string>('');
   const [showFilters, setShowFilters] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [downloadTarget, setDownloadTarget] = useState<string>('all');
   const [activePredefined, setActivePredefined] = useState<'today' | '7days' | '30days' | null>(null);
 
-  // Theme State
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const savedTheme = typeof localStorage !== 'undefined' ? localStorage.getItem('theme') : 'light';
     return savedTheme === 'dark';
   });
 
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) setHistory(JSON.parse(saved));
-  }, []);
+    const loadData = async () => {
+      setIsLoadingData(true);
+      const data = await dataService.getAllFeedbacks();
+      setHistory(data);
+      setIsLoadingData(false);
+    };
+    loadData();
+  }, [step]);
 
   useEffect(() => {
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
@@ -111,6 +122,12 @@ const App: React.FC = () => {
       setIsPromptingPassword(false);
       setPasswordValue('');
       setPasswordError(false);
+      return;
+    }
+    if (isPromptingReset) {
+      setIsPromptingReset(false);
+      setResetPasswordValue('');
+      setResetPasswordError(false);
       return;
     }
     if (step === AppStep.PROFESSIONAL) setStep(AppStep.WELCOME);
@@ -132,21 +149,28 @@ const App: React.FC = () => {
     }
   };
 
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (resetPasswordValue === RESET_PASSWORD) {
+      await dataService.clearAllData();
+      setHistory([]);
+      setIsPromptingReset(false);
+      setResetPasswordValue('');
+      setResetPasswordError(false);
+    } else {
+      setResetPasswordError(true);
+      setResetPasswordValue('');
+    }
+  };
+
   const handlePredefinedFilter = (range: 'today' | '7days' | '30days') => {
     const end = new Date();
     const start = new Date();
-    
-    if (range === 'today') {
-      // Keep today
-    } else if (range === '7days') {
-      start.setDate(end.getDate() - 7);
-    } else if (range === '30days') {
-      start.setDate(end.getDate() - 30);
-    }
-
+    if (range === 'today') { } 
+    else if (range === '7days') start.setDate(end.getDate() - 7);
+    else if (range === '30days') start.setDate(end.getDate() - 30);
     const startStr = start.toISOString().split('T')[0];
     const endStr = end.toISOString().split('T')[0];
-
     setFilterStartDate(startStr);
     setFilterEndDate(endStr);
     setActivePredefined(range);
@@ -165,13 +189,11 @@ const App: React.FC = () => {
       const result = await analyzeFeedback(feedback);
       setAiMessage(result);
       const finalFeedback = { ...feedback, timestamp: new Date().toISOString() };
-      const newHistory = [...history, finalFeedback];
-      setHistory(newHistory);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(newHistory));
+      await dataService.saveFeedback(finalFeedback);
       setStep(AppStep.SUCCESS);
     } catch (error) {
       console.error("Erro crítico no envio:", error);
-      setAiMessage(`Obrigado por sua avaliação do atendimento com ${feedback.professional}! Valorizamos muito o seu feedback.\n\nAtenciosamente, Hospital Santa Filomena`);
+      setAiMessage(`Obrigado por sua avaliação! Valorizamos muito o seu feedback.\n\nAtenciosamente, Hospital Santa Filomena`);
       setStep(AppStep.SUCCESS);
     }
   };
@@ -213,43 +235,77 @@ const App: React.FC = () => {
   const generatePDFReport = () => {
     const doc = new jsPDF();
     const today = new Date().toLocaleDateString('pt-BR');
-    doc.setFontSize(22);
-    doc.setTextColor(63, 81, 181);
-    doc.text('Hospital Santa Filomena', 105, 20, { align: 'center' });
+    
+    const exportData = downloadTarget === 'all' 
+      ? filteredHistory 
+      : filteredHistory.filter(h => h.professional === downloadTarget);
+    
+    if (exportData.length === 0) {
+      alert("Não há dados para exportar com esta seleção.");
+      return;
+    }
+
+    const reportSum = exportData.reduce((acc, curr) => acc + (curr.nps || 0), 0);
+    const reportAvg = (reportSum / exportData.length).toFixed(1);
+    const reportPromoters = exportData.filter(h => (h.nps || 0) >= 9).length;
+    const reportDetractors = exportData.filter(h => (h.nps || 0) <= 6).length;
+    const reportNps = Math.round(((reportPromoters / exportData.length) - (reportDetractors / exportData.length)) * 100);
+
+    doc.setFillColor(63, 81, 181);
+    doc.rect(0, 0, 210, 40, 'F');
+    doc.setFontSize(24);
+    doc.setTextColor(255, 255, 255);
+    doc.text('HOSPITAL SANTA FILOMENA', 105, 20, { align: 'center' });
     doc.setFontSize(14);
-    doc.setTextColor(100);
     doc.text('Relatório Gerencial de Atendimento', 105, 30, { align: 'center' });
-    const filtersUsed = [];
-    if (filterStartDate || filterEndDate) filtersUsed.push(`${filterStartDate || 'Início'} até ${filterEndDate || 'Fim'}`);
-    if (filterProfessional) filtersUsed.push(`Profissional: ${filterProfessional}`);
-    const periodText = filtersUsed.length > 0 ? `Filtros: ${filtersUsed.join(' | ')}` : `Data de Emissão: ${today}`;
-    doc.text(periodText, 105, 38, { align: 'center' });
-    doc.setDrawColor(230);
-    doc.line(20, 45, 190, 45);
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(10);
+    doc.text(`Emissão: ${today}`, 196, 50, { align: 'right' });
+    doc.text(`Alvo: ${downloadTarget === 'all' ? 'Todos os Profissionais' : downloadTarget}`, 14, 50);
+
+    doc.setDrawColor(230, 230, 230);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(14, 55, 182, 30, 3, 3, 'FD');
     doc.setFontSize(12);
-    doc.setTextColor(0);
-    doc.text('RESUMO EXECUTIVO', 20, 55);
-    const totalCount = stats?.total ?? 0;
-    const tableData = [
-      ['Total de Avaliações', totalCount.toString()], 
-      ['Nota Média Geral', `${stats?.avg ?? '0'} / 10`], 
-      ['NPS (Net Promoter Score)', `${stats?.nps ?? 0}`], 
-      ['Promotores (9-10)', (stats?.promoters ?? 0).toString()], 
-      ['Detratores (0-6)', (stats?.detractors ?? 0).toString()]
-    ];
-    (doc as any).autoTable({ startY: 60, head: [['Métrica', 'Valor']], body: tableData, theme: 'striped', headStyles: { fillColor: [63, 81, 181] } });
-    const profCounts = stats?.profCounts ?? {};
-    const profData = Object.entries(profCounts).map(([name, count]) => [name, count]);
-    if (profData.length > 0) {
-      doc.text('ATENDIMENTOS POR PROFISSIONAL', 20, (doc as any).lastAutoTable.finalY + 15);
-      (doc as any).autoTable({ startY: (doc as any).lastAutoTable.finalY + 20, head: [['Profissional', 'Total de Avaliações']], body: profData });
-    }
-    const comments = filteredHistory.filter(h => h.comment.length > 0).map(h => [new Date(h.timestamp).toLocaleTimeString('pt-BR'), h.professional, h.nps, h.comment]);
-    if (comments.length > 0) {
-      doc.text('COMENTÁRIOS DOS PACIENTES', 20, (doc as any).lastAutoTable.finalY + 15);
-      (doc as any).autoTable({ startY: (doc as any).lastAutoTable.finalY + 20, head: [['Horário', 'Profissional', 'Nota', 'Comentário']], body: comments, columnStyles: { 3: { cellWidth: 100 } } });
-    }
-    doc.save(`Relatorio_Atendimento_${today.replace(/\//g, '-')}.pdf`);
+    doc.text('Resumo do Período', 20, 65);
+    
+    (doc as any).autoTable({
+      startY: 70,
+      margin: { left: 20 },
+      head: [['Métrica', 'Consolidado']],
+      body: [
+        ['Total de Avaliações', exportData.length.toString()],
+        ['Nota Média Geral', `${reportAvg} / 10`],
+        ['Net Promoter Score (NPS)', reportNps.toString()]
+      ],
+      theme: 'plain',
+      styles: { fontSize: 9, cellPadding: 1 }
+    });
+
+    const tableRows = exportData.map(h => [
+      new Date(h.timestamp).toLocaleDateString('pt-BR'),
+      h.professional,
+      h.nps,
+      h.comment || '-'
+    ]);
+    
+    doc.setFontSize(14);
+    doc.setTextColor(63, 81, 181);
+    doc.text('Detalhamento de Feedbacks', 14, (doc as any).lastAutoTable.finalY + 15);
+    
+    (doc as any).autoTable({
+      startY: (doc as any).lastAutoTable.finalY + 20,
+      head: [['Data', 'Profissional', 'Nota', 'Comentário']],
+      body: tableRows,
+      theme: 'striped',
+      headStyles: { fillColor: [63, 81, 181], textColor: [255, 255, 255] },
+      columnStyles: { 3: { cellWidth: 80 } },
+      styles: { fontSize: 8 }
+    });
+    
+    const filename = `Relatorio_${downloadTarget.replace(/\s+/g, '_')}_${today.replace(/\//g, '-')}.pdf`;
+    doc.save(filename);
+    setShowDownloadModal(false);
   };
 
   const renderStepContent = () => {
@@ -276,6 +332,34 @@ const App: React.FC = () => {
             <div className="grid grid-cols-2 gap-3 sm:gap-4">
               <button type="button" onClick={handleBack} className={`py-4 sm:py-5 rounded-[1.5rem] font-bold transition-all text-sm sm:text-base ${isDarkMode ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Voltar</button>
               <button type="submit" className="py-4 sm:py-5 bg-indigo-600 text-white rounded-[1.5rem] font-bold shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 active:scale-95 transition-all text-sm sm:text-base">Entrar</button>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    if (isPromptingReset) {
+      return (
+        <div className="space-y-6 sm:space-y-8 py-4 animate-in fade-in zoom-in duration-500">
+          <div className="text-center">
+            <div className={`inline-flex p-4 sm:p-5 rounded-full mb-6 ${isDarkMode ? 'bg-rose-900/40 text-rose-400' : 'bg-rose-50 text-rose-600'}`}>
+              <AlertTriangle className="w-8 h-8 sm:w-10 h-10" />
+            </div>
+            <h2 className={`text-2xl sm:text-3xl font-bold ${isDarkMode ? 'text-neutral-100' : 'text-slate-800'}`}>Limpar Dados</h2>
+            <p className={`${isDarkMode ? 'text-neutral-400' : 'text-slate-500'} mt-2 text-sm sm:text-base`}>Esta ação é irreversível.</p>
+          </div>
+          <form onSubmit={handleResetSubmit} className="space-y-4">
+            <input
+              type="password"
+              value={resetPasswordValue}
+              autoFocus
+              onChange={(e) => { setResetPasswordValue(e.target.value); setResetPasswordError(false); }}
+              placeholder="••••••"
+              className={`w-full p-5 sm:p-6 border-2 rounded-[2rem] text-center text-2xl sm:text-3xl tracking-[0.5em] font-mono focus:outline-none transition-all ${isDarkMode ? 'bg-neutral-900 border-neutral-800 text-neutral-100 focus:border-rose-500' : 'bg-slate-50 border-slate-100 focus:border-rose-500 text-slate-800'}`}
+            />
+            <div className="grid grid-cols-2 gap-3 sm:gap-4">
+              <button type="button" onClick={handleBack} className={`py-4 sm:py-5 rounded-[1.5rem] font-bold transition-all text-sm sm:text-base ${isDarkMode ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Cancelar</button>
+              <button type="submit" className="py-4 sm:py-5 bg-rose-600 text-white rounded-[1.5rem] font-bold shadow-lg shadow-rose-600/20 hover:bg-rose-700 active:scale-95 transition-all text-sm sm:text-base">Apagar Tudo</button>
             </div>
           </form>
         </div>
@@ -341,10 +425,7 @@ const App: React.FC = () => {
           <div className="space-y-8 sm:space-y-10 py-6 animate-in slide-in-from-right duration-500">
             <div className="text-center space-y-1 sm:space-y-2">
               <h2 className={`text-2xl sm:text-3xl font-black leading-tight ${isDarkMode ? 'text-neutral-100' : 'text-slate-900'}`}>Como foi sua experiência?</h2>
-              <p className={`${isDarkMode ? 'text-neutral-500' : 'text-slate-500'} font-medium text-sm sm:text-base`}>De 0 a 10, que nota você daria?</p>
             </div>
-            
-            {/* Emojis Aproximados e Centralizados */}
             <div className="flex flex-wrap justify-center gap-3 sm:gap-6 px-2">
               {EMOJIS.map((emoji) => {
                 const isSelected = feedback.nps !== null && emoji.range.includes(feedback.nps);
@@ -355,31 +436,23 @@ const App: React.FC = () => {
                     className={`flex flex-col items-center gap-2 p-2 sm:p-3 rounded-2xl transition-all duration-300 transform ${isSelected ? 'scale-125' : 'opacity-40 hover:opacity-100'}`}
                   >
                     <span className="text-3xl sm:text-4xl">{emoji.char}</span>
-                    <span className={`text-[9px] sm:text-[10px] font-black uppercase tracking-widest ${isSelected ? (isDarkMode ? 'text-indigo-400' : 'text-indigo-600') : 'text-transparent'}`}>{emoji.label}</span>
                   </button>
                 );
               })}
             </div>
-
             <div className="flex flex-col items-center gap-5">
               <div className="flex flex-wrap justify-center gap-2">
                 {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
                   <button 
                     key={num} 
                     onClick={() => setFeedback({ ...feedback, nps: num })} 
-                    className={`w-9 h-9 sm:w-11 sm:h-11 rounded-full text-white font-bold text-sm sm:text-base transition-all transform ${getNpsColor(num)} ${feedback.nps === num ? 'scale-125 ring-4 ring-indigo-500/30 z-10 shadow-lg' : 'opacity-90 hover:opacity-100 active:scale-75'}`}
+                    className={`w-9 h-9 sm:w-11 sm:h-11 rounded-full text-white font-bold text-sm sm:text-base transition-all transform ${getNpsColor(num)} ${feedback.nps === num ? 'scale-125 ring-4 ring-indigo-500/30 shadow-lg' : 'opacity-90 hover:opacity-100'}`}
                   >
                     {num}
                   </button>
                 ))}
               </div>
             </div>
-            
-            <div className={`flex justify-between text-[10px] sm:text-[11px] font-black uppercase tracking-[0.2em] px-4 ${isDarkMode ? 'text-neutral-700' : 'text-slate-300'}`}>
-              <span>Insatisfeito</span>
-              <span>Encantado</span>
-            </div>
-
             <button disabled={feedback.nps === null} onClick={handleNext} className={`w-full py-4 sm:py-5 rounded-[2rem] font-bold transition-all text-sm sm:text-base ${feedback.nps !== null ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-600/20 active:scale-95' : (isDarkMode ? 'bg-neutral-800 text-neutral-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed')}`}>Confirmar Nota</button>
           </div>
         );
@@ -389,19 +462,13 @@ const App: React.FC = () => {
           <div className="space-y-6 sm:space-y-8 py-6 animate-in slide-in-from-right duration-500">
             <div className="text-center space-y-1 sm:space-y-2">
               <h2 className={`text-2xl sm:text-3xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-slate-900'}`}>Algo a adicionar?</h2>
-              <p className={`${isDarkMode ? 'text-neutral-500' : 'text-slate-500'} font-medium text-sm sm:text-base`}>Seu comentário nos ajuda a crescer!</p>
             </div>
-            <div className="relative group">
-              <textarea 
-                value={feedback.comment} 
-                onChange={(e) => setFeedback({ ...feedback, comment: e.target.value })} 
-                placeholder="Conte-nos como foi..." 
-                className={`w-full h-36 sm:h-44 p-5 sm:p-6 rounded-[2rem] sm:rounded-[2.5rem] border-2 transition-all resize-none text-base sm:text-lg leading-relaxed placeholder:text-neutral-600 outline-none ${isDarkMode ? 'bg-neutral-900/50 border-neutral-800 text-neutral-100 focus:border-indigo-500/50' : 'bg-slate-50/50 border-slate-100 text-slate-700 focus:border-indigo-500/50'}`} 
-              />
-              <div className={`absolute bottom-5 right-6 sm:bottom-6 sm:right-8 transition-colors ${feedback.comment ? 'text-indigo-500' : (isDarkMode ? 'text-neutral-800' : 'text-slate-200')}`}>
-                <MessageSquare className="w-5 h-5 sm:w-6 h-6" />
-              </div>
-            </div>
+            <textarea 
+              value={feedback.comment} 
+              onChange={(e) => setFeedback({ ...feedback, comment: e.target.value })} 
+              placeholder="Conte-nos como foi..." 
+              className={`w-full h-36 sm:h-44 p-5 sm:p-6 rounded-[2rem] border-2 transition-all resize-none text-base sm:text-lg leading-relaxed outline-none ${isDarkMode ? 'bg-neutral-900/50 border-neutral-800 text-neutral-100 focus:border-indigo-500/50' : 'bg-slate-50/50 border-slate-100 text-slate-700 focus:border-indigo-500/50'}`} 
+            />
             <button onClick={handleNext} className="w-full py-4 sm:py-5 bg-indigo-600 text-white rounded-[2rem] font-bold shadow-xl shadow-indigo-600/20 active:scale-95 transition-all text-sm sm:text-base">Enviar Feedback</button>
           </div>
         );
@@ -409,35 +476,22 @@ const App: React.FC = () => {
       case AppStep.PROCESSING:
         return (
           <div className="flex flex-col items-center justify-center py-16 sm:py-24 space-y-6 sm:space-y-8 animate-in fade-in zoom-in duration-500">
-            <div className="relative">
-               <div className="absolute inset-0 bg-indigo-500 blur-2xl opacity-20 animate-pulse"></div>
-               <Loader2 className="w-16 h-16 sm:w-20 h-20 text-indigo-600 animate-spin relative" />
-            </div>
-            <div className="text-center space-y-2">
-              <h3 className={`text-xl sm:text-2xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-slate-900'}`}>Quase pronto...</h3>
-              <p className={`${isDarkMode ? 'text-neutral-500' : 'text-slate-500'} font-medium text-sm sm:text-base`}>A IA está processando seu feedback</p>
-            </div>
+            <Loader2 className="w-16 h-16 sm:w-20 h-20 text-indigo-600 animate-spin" />
+            <h3 className={`text-xl sm:text-2xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-slate-900'}`}>Quase pronto...</h3>
           </div>
         );
 
       case AppStep.SUCCESS:
         return (
           <div className="text-center space-y-8 sm:space-y-10 py-6 sm:py-10 animate-in zoom-in duration-700">
-            <div className="inline-flex items-center justify-center w-24 h-24 sm:w-28 h-28 bg-emerald-500/10 rounded-full animate-bounce">
-              <CheckCircle2 className="w-12 h-12 sm:w-16 h-16 text-emerald-500" />
-            </div>
+            <CheckCircle2 className="w-12 h-12 sm:w-16 h-16 text-emerald-500 mx-auto" />
             <div className="space-y-4">
-              <h2 className={`text-3xl sm:text-4xl font-black tracking-tight ${isDarkMode ? 'text-neutral-100' : 'text-slate-900'}`}>Obrigado!</h2>
-              <div className={`mx-auto p-6 sm:p-8 rounded-[2rem] sm:rounded-[2.5rem] border relative overflow-hidden transition-all duration-500 ${isDarkMode ? 'bg-indigo-950/10 border-indigo-900/30' : 'bg-indigo-50/50 border-indigo-100'}`}>
-                <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-500/30"></div>
-                <p className={`text-base sm:text-lg leading-relaxed italic whitespace-pre-wrap ${isDarkMode ? 'text-indigo-300' : 'text-indigo-900'}`}>
-                  {aiMessage}
-                </p>
-              </div>
+              <h2 className={`text-3xl sm:text-4xl font-black ${isDarkMode ? 'text-neutral-100' : 'text-slate-900'}`}>Obrigado!</h2>
+              <p className={`text-base sm:text-lg leading-relaxed italic ${isDarkMode ? 'text-indigo-300' : 'text-indigo-900'}`}>{aiMessage}</p>
             </div>
             <button 
               onClick={() => { setFeedback({ professional: null, nps: null, comment: '', timestamp: '' }); setStep(AppStep.WELCOME); }} 
-              className={`w-full py-4 sm:py-5 font-bold flex items-center justify-center gap-3 transition-all text-sm sm:text-base ${isDarkMode ? 'text-neutral-500 hover:text-indigo-400' : 'text-slate-500 hover:text-indigo-600'}`}
+              className="w-full py-4 sm:py-5 font-bold flex items-center justify-center gap-3 transition-all text-slate-500 hover:text-indigo-600"
             >
               <Home className="w-4 h-4 sm:w-5 h-5" /> Início
             </button>
@@ -446,131 +500,224 @@ const App: React.FC = () => {
 
       case AppStep.DASHBOARD:
         return (
-          <div className={`space-y-6 sm:space-y-8 py-4 h-[82vh] overflow-y-auto no-scrollbar transition-all duration-500 px-4 sm:px-10 ${isDarkMode ? 'bg-black text-neutral-100' : 'bg-white text-slate-900'}`}>
-            <div className={`flex flex-col sticky top-0 z-30 pb-4 sm:pb-6 transition-all duration-500 ${isDarkMode ? 'bg-black/80 backdrop-blur-xl' : 'bg-white/80 backdrop-blur-xl'}`}>
-              <div className="flex items-center justify-between py-4 sm:py-6">
-                <div className="flex items-center gap-2 sm:gap-3">
-                  <div className="p-2 sm:p-2.5 bg-indigo-600 rounded-xl sm:rounded-2xl shadow-lg shadow-indigo-600/20">
-                    <ShieldCheck className="w-5 h-5 sm:w-6 h-6 text-white" />
+          <div className={`space-y-6 sm:space-y-8 py-4 h-[82vh] overflow-y-auto no-scrollbar px-4 sm:px-10 ${isDarkMode ? 'bg-black text-neutral-100' : 'bg-white text-slate-900'}`}>
+            <div className={`flex items-center justify-between py-4 sm:py-6 sticky top-0 z-30 transition-all ${isDarkMode ? 'bg-black/80 backdrop-blur-md' : 'bg-white/80 backdrop-blur-md'}`}>
+              <div className="flex items-center gap-2 sm:gap-3">
+                <ShieldCheck className="w-6 h-6 text-indigo-600" />
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-black">Analytics</h2>
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-[8px] font-black uppercase">
+                      <Cloud className="w-2.5 h-2.5" /> 
+                      <Check className="w-2 h-2 -ml-0.5" />
+                      Global
+                    </div>
                   </div>
-                  <div>
-                    <h2 className="text-xl sm:text-2xl font-black tracking-tight">Analytics</h2>
-                    <p className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest ${isDarkMode ? 'text-neutral-600' : 'text-slate-400'}`}>Gestão Hospitalar</p>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => setShowFilters(!showFilters)} className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl transition-all border ${showFilters || filterStartDate || filterEndDate || filterProfessional ? 'bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-600/20' : (isDarkMode ? 'bg-neutral-900 text-indigo-400 border-neutral-800' : 'bg-indigo-50 text-indigo-600 border-indigo-100 hover:bg-indigo-100')}`}>
-                    <Filter className="w-4 h-4 sm:w-5 h-5" />
-                  </button>
-                  <button onClick={generatePDFReport} disabled={filteredHistory.length === 0} className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl disabled:opacity-30 transition-all border ${isDarkMode ? 'bg-neutral-900 text-neutral-100 border-neutral-800 hover:bg-neutral-800' : 'bg-indigo-50 text-indigo-600 border-indigo-100 hover:bg-indigo-100'}`}>
-                    <Download className="w-4 h-4 sm:w-5 h-5" />
-                  </button>
                 </div>
               </div>
-              {showFilters && (
-                <div className={`p-5 sm:p-6 rounded-[1.5rem] sm:rounded-[2rem] border mb-4 space-y-5 sm:space-y-6 animate-in slide-in-from-top-4 duration-500 shadow-2xl ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <div className="space-y-3">
-                    <label className={`text-[9px] sm:text-[10px] font-black uppercase flex items-center gap-2 ${isDarkMode ? 'text-neutral-600' : 'text-slate-500'}`}><Clock className="w-4 h-4" /> Períodos Rápidos</label>
-                    <div className="flex gap-2">
-                      {[{ id: 'today', label: 'Hoje' }, { id: '7days', label: '7 dias' }, { id: '30days', label: '30 dias' }].map(chip => (
-                        <button key={chip.id} onClick={() => handlePredefinedFilter(chip.id as any)} className={`flex-1 py-2 sm:py-3 text-[10px] sm:text-xs font-black rounded-xl border transition-all ${activePredefined === chip.id ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg' : (isDarkMode ? 'bg-black border-neutral-800 text-neutral-500 hover:border-neutral-700' : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-300')}`}>{chip.label}</button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                    <div className="space-y-1.5">
-                      <label className={`text-[9px] sm:text-[10px] font-black uppercase ${isDarkMode ? 'text-neutral-600' : 'text-slate-500'}`}>Início</label>
-                      <input type="date" value={filterStartDate} onChange={(e) => { setFilterStartDate(e.target.value); setActivePredefined(null); }} className={`w-full p-2.5 sm:p-3 border-2 rounded-xl text-[11px] sm:text-xs outline-none focus:border-indigo-500 transition-all ${isDarkMode ? 'bg-black border-neutral-800 text-neutral-100' : 'bg-white border-slate-200 text-slate-900'}`} />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className={`text-[9px] sm:text-[10px] font-black uppercase ${isDarkMode ? 'text-neutral-600' : 'text-slate-500'}`}>Fim</label>
-                      <input type="date" value={filterEndDate} onChange={(e) => { setFilterEndDate(e.target.value); setActivePredefined(null); }} className={`w-full p-2.5 sm:p-3 border-2 rounded-xl text-[11px] sm:text-xs outline-none focus:border-indigo-500 transition-all ${isDarkMode ? 'bg-black border-neutral-800 text-neutral-100' : 'bg-white border-slate-200 text-slate-900'}`} />
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className={`text-[9px] sm:text-[10px] font-black uppercase flex items-center gap-2 ${isDarkMode ? 'text-neutral-600' : 'text-slate-500'}`}><Briefcase className="w-4 h-4" /> Profissional</label>
-                    <select value={filterProfessional} onChange={(e) => setFilterProfessional(e.target.value)} className={`w-full p-2.5 sm:p-3 border-2 rounded-xl text-[11px] sm:text-xs font-bold outline-none focus:border-indigo-500 transition-all ${isDarkMode ? 'bg-black border-neutral-800 text-neutral-100' : 'bg-white border-slate-200 text-slate-900'}`}>
-                      <option value="">Todos os Médicos</option>
-                      {PROFESSIONALS.map(name => <option key={name} value={name}>{name}</option>)}
-                    </select>
-                  </div>
-                  <div className={`flex justify-between items-center pt-3 sm:pt-4 border-t ${isDarkMode ? 'border-neutral-800' : 'border-slate-200'}`}>
-                    <button onClick={clearFilters} className="text-[10px] sm:text-xs text-rose-500 font-black hover:underline flex items-center gap-2"><X className="w-3.5 h-3.5" /> Limpar</button>
-                    <button onClick={() => setShowFilters(false)} className="text-[10px] sm:text-xs bg-indigo-600 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-full font-black shadow-lg shadow-indigo-600/20 active:scale-95 transition-all">Aplicar</button>
-                  </div>
-                </div>
-              )}
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setShowFilters(!showFilters)} 
+                  className={`p-2.5 sm:p-3 rounded-xl border transition-all ${showFilters ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}
+                >
+                  <Filter className="w-5 h-5" />
+                </button>
+                <button 
+                  onClick={() => setShowDownloadModal(true)} 
+                  disabled={filteredHistory.length === 0}
+                  className="p-2.5 sm:p-3 rounded-xl border bg-indigo-50 text-indigo-600 border-indigo-100 disabled:opacity-30"
+                >
+                  <Download className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
-            {filteredHistory.length === 0 ? (
-              <div className="text-center py-20 text-slate-400 space-y-3 sm:space-y-4">
-                <div className={`w-16 h-16 sm:w-20 h-20 mx-auto rounded-full flex items-center justify-center ${isDarkMode ? 'bg-neutral-900' : 'bg-slate-50'}`}>
-                   <BarChart3 className={`w-8 h-8 sm:w-10 h-10 ${isDarkMode ? 'opacity-20' : 'opacity-10'}`} />
-                </div>
-                <p className="font-medium text-sm">Nenhum dado encontrado.</p>
-              </div>
-            ) : (
-              <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-700 pb-16">
-                <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                  {[
-                    { label: 'Avaliações', val: stats?.total, icon: Users, bg: isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-indigo-50 border-indigo-100', color: isDarkMode ? 'text-indigo-400' : 'text-indigo-600', valColor: isDarkMode ? 'text-neutral-100' : 'text-indigo-900' },
-                    { label: 'NPS Global', val: stats?.nps, icon: TrendingUp, bg: isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-emerald-50 border-emerald-100', color: isDarkMode ? 'text-emerald-400' : 'text-emerald-600', valColor: isDarkMode ? 'text-neutral-100' : 'text-emerald-900' },
-                    { label: 'Nota Média', val: stats?.avg, icon: Star, bg: isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-amber-50 border-amber-100', color: isDarkMode ? 'text-amber-400' : 'text-amber-600', valColor: isDarkMode ? 'text-neutral-100' : 'text-amber-900' },
-                    { label: 'Período', val: filteredHistory.length, icon: Calendar, bg: isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-100', color: isDarkMode ? 'text-neutral-500' : 'text-slate-400', valColor: isDarkMode ? 'text-neutral-400' : 'text-slate-800' }
-                  ].map((card, i) => (
-                    <div key={i} className={`p-4 sm:p-6 rounded-[1.5rem] sm:rounded-[2rem] border transition-all duration-500 ${card.bg}`}>
-                      <div className={`flex items-center gap-1.5 sm:gap-2 mb-1.5 sm:mb-2 ${card.color}`}><card.icon className="w-4 h-4 sm:w-5 h-5" /><span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest">{card.label}</span></div>
-                      <p className={`text-2xl sm:text-4xl font-black ${card.valColor}`}>{card.val}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {!filterProfessional && (
-                  <div className={`p-6 sm:p-8 rounded-[1.5rem] sm:rounded-[2.5rem] border shadow-sm transition-all duration-500 ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-white border-slate-100'}`}>
-                    <h3 className={`text-base sm:text-lg font-black mb-6 sm:mb-8 ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>Performance por Médico</h3>
-                    <div className="space-y-5 sm:space-y-6">
-                      {PROFESSIONALS.map((name) => {
-                        const profCounts = stats?.profCounts ?? {};
-                        const count = profCounts[name] || 0;
-                        const totalEvaluations = stats?.total ?? 0;
-                        const pct = totalEvaluations > 0 ? Math.round((count / totalEvaluations) * 100) : 0;
-                        return (
-                          <div key={name} className="flex items-center gap-3 sm:gap-5">
-                            <span className={`text-[11px] sm:text-xs font-black w-24 sm:w-36 truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>{name}</span>
-                            <div className={`flex-1 h-2 sm:h-3 rounded-full overflow-hidden ${isDarkMode ? 'bg-black' : 'bg-slate-100'}`}>
-                               <div className="h-full bg-gradient-to-r from-indigo-500 to-indigo-400 rounded-full transition-all duration-1000" style={{ width: `${pct}%` }} />
-                            </div>
-                            <span className={`text-[10px] sm:text-xs font-black w-8 sm:w-10 text-right ${isDarkMode ? 'text-neutral-600' : 'text-slate-400'}`}>{pct}%</span>
-                          </div>
-                        );
-                      })}
-                    </div>
+            {/* PAINEL DE FILTROS ESTILO IMAGEM */}
+            {showFilters && (
+              <div className={`p-8 rounded-[2.5rem] border shadow-2xl animate-in fade-in slide-in-from-top-4 duration-500 space-y-8 ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-white border-slate-100'}`}>
+                
+                {/* Períodos Rápidos */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Clock className="w-5 h-5" />
+                    <span className="text-[10px] font-black uppercase tracking-widest">Períodos Rápidos</span>
                   </div>
-                )}
-
-                <div className="space-y-4 sm:space-y-5">
-                  <h3 className={`text-base sm:text-lg font-black px-2 ${isDarkMode ? 'text-neutral-400' : 'text-slate-800'}`}>Feedbacks Recentes</h3>
-                  <div className="grid grid-cols-1 gap-3 sm:gap-4">
-                    {filteredHistory.slice(-8).reverse().map((h, i) => (
-                      <div key={i} className={`p-4 sm:p-6 rounded-[1.5rem] sm:rounded-[2rem] border transition-all duration-500 ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50/50 border-slate-100 shadow-sm'}`}>
-                        <div className="flex justify-between items-start mb-3 sm:mb-4">
-                          <div className="flex flex-col gap-1.5 sm:gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className={`px-2 sm:px-3 py-0.5 sm:py-1 rounded-full text-[9px] sm:text-[10px] font-black text-white shadow-lg shadow-black/10 ${getNpsColor(h.nps || 0)}`}>NOTA {h.nps}</span>
-                              <span className={`text-[9px] sm:text-[10px] font-black uppercase tracking-widest ${isDarkMode ? 'text-indigo-500' : 'text-indigo-600'}`}>{h.professional}</span>
-                            </div>
-                          </div>
-                          <span className={`text-[9px] sm:text-[10px] font-black ${isDarkMode ? 'text-neutral-700' : 'text-slate-300'}`}>{new Date(h.timestamp).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}</span>
-                        </div>
-                        <p className={`text-sm sm:text-base leading-relaxed italic ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>"{h.comment || 'Sem observações adicionais.'}"</p>
-                      </div>
-                    ))}
+                  <div className="grid grid-cols-3 gap-3">
+                    {['Hoje', '7 dias', '30 dias'].map((label, idx) => {
+                      const id = idx === 0 ? 'today' : idx === 1 ? '7days' : '30days';
+                      return (
+                        <button 
+                          key={id}
+                          onClick={() => handlePredefinedFilter(id as any)}
+                          className={`py-4 px-2 rounded-2xl border text-[13px] font-medium transition-all ${activePredefined === id ? 'bg-white border-slate-200 text-indigo-600 shadow-sm' : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200'}`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <button onClick={() => { if (confirm('Limpar banco de dados?')) { localStorage.removeItem(STORAGE_KEY); setHistory([]); } }} className={`w-full py-5 sm:py-6 text-[9px] sm:text-xs font-black uppercase tracking-[0.3em] flex items-center justify-center gap-3 opacity-30 hover:opacity-100 transition-all mt-8 hover:text-rose-500 ${isDarkMode ? 'text-neutral-800' : 'text-slate-300'}`}><Trash2 className="w-3.5 h-3.5 sm:w-4 h-4" /> Resetar Dados</button>
+                {/* Datas Início e Fim */}
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Início</label>
+                    <div className="relative">
+                      <input 
+                        type="date" 
+                        value={filterStartDate}
+                        onChange={(e) => { setFilterStartDate(e.target.value); setActivePredefined(null); }}
+                        className="w-full p-4 pr-10 border border-slate-100 rounded-2xl text-[13px] outline-none bg-white focus:border-indigo-100 transition-all text-slate-600" 
+                      />
+                      <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 pointer-events-none" />
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Fim</label>
+                    <div className="relative">
+                      <input 
+                        type="date" 
+                        value={filterEndDate}
+                        onChange={(e) => { setFilterEndDate(e.target.value); setActivePredefined(null); }}
+                        className="w-full p-4 pr-10 border border-slate-100 rounded-2xl text-[13px] outline-none bg-white focus:border-indigo-100 transition-all text-slate-600" 
+                      />
+                      <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 pointer-events-none" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Profissional */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Briefcase className="w-5 h-5" />
+                    <span className="text-[10px] font-black uppercase tracking-widest">Profissional</span>
+                  </div>
+                  <div className="relative">
+                    <select 
+                      value={filterProfessional}
+                      onChange={(e) => setFilterProfessional(e.target.value)}
+                      className="w-full p-4 rounded-2xl border border-slate-100 text-[14px] font-bold outline-none bg-white appearance-none focus:border-indigo-100 transition-all text-slate-800"
+                    >
+                      <option value="">Todos os Médicos</option>
+                      {PROFESSIONALS.map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
+                       <ChevronRight className="w-4 h-4 text-slate-400 rotate-90" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Rodapé do Filtro */}
+                <div className="flex items-center justify-between pt-4 border-t border-slate-50">
+                  <button 
+                    onClick={clearFilters}
+                    className="flex items-center gap-2 text-rose-500 font-bold text-sm hover:opacity-70 transition-all"
+                  >
+                    <X className="w-4 h-4" />
+                    Limpar
+                  </button>
+                  <button 
+                    onClick={() => setShowFilters(false)}
+                    className="bg-indigo-600 text-white px-10 py-4 rounded-[1.5rem] font-bold shadow-lg shadow-indigo-600/20 active:scale-95 transition-all text-sm"
+                  >
+                    Aplicar
+                  </button>
+                </div>
               </div>
             )}
+
+            {/* Modal de Download Personalizado */}
+            {showDownloadModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+                <div className={`w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl border ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-white border-white'}`}>
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-indigo-50 rounded-xl">
+                        <FileText className="w-6 h-6 text-indigo-600" />
+                      </div>
+                      <h3 className="text-xl font-black">Exportar</h3>
+                    </div>
+                    <button onClick={() => setShowDownloadModal(false)} className="text-slate-300 hover:text-slate-500">
+                      <X className="w-6 h-6" />
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Escopo do Relatório</label>
+                      <div className="grid grid-cols-1 gap-2">
+                        <button 
+                          onClick={() => setDownloadTarget('all')}
+                          className={`w-full py-4 px-6 rounded-2xl text-left border-2 transition-all flex items-center justify-between ${downloadTarget === 'all' ? 'border-indigo-600 bg-indigo-50/50' : 'border-slate-100 hover:border-indigo-100'}`}
+                        >
+                          <span className="font-bold">Todos os Médicos</span>
+                          {downloadTarget === 'all' && <Check className="w-5 h-5 text-indigo-600" />}
+                        </button>
+                        
+                        <div className="relative">
+                          <select 
+                            value={downloadTarget !== 'all' ? downloadTarget : ''}
+                            onChange={(e) => setDownloadTarget(e.target.value)}
+                            className={`w-full py-4 px-6 rounded-2xl border-2 font-bold outline-none appearance-none transition-all ${downloadTarget !== 'all' ? 'border-indigo-600 bg-indigo-50/50' : 'border-slate-100 hover:border-indigo-100'}`}
+                          >
+                            <option value="" disabled>Selecionar Profissional...</option>
+                            {PROFESSIONALS.map(p => <option key={p} value={p}>{p}</option>)}
+                          </select>
+                          <Briefcase className="absolute right-6 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 pointer-events-none" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <p className="text-[10px] text-slate-400 italic">
+                      * O relatório considerará os filtros de data aplicados no dashboard.
+                    </p>
+
+                    <button 
+                      onClick={generatePDFReport}
+                      className="w-full py-5 bg-indigo-600 text-white rounded-[1.5rem] font-black shadow-xl shadow-indigo-600/20 active:scale-95 transition-all flex items-center justify-center gap-3"
+                    >
+                      <Download className="w-5 h-5" />
+                      Gerar Documento PDF
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 sm:gap-4">
+              {[
+                { label: 'Avaliações', val: stats?.total, icon: Users, color: 'text-indigo-600' },
+                { label: 'NPS Global', val: stats?.nps, icon: TrendingUp, color: 'text-emerald-600' },
+                { label: 'Nota Média', val: stats?.avg, icon: Star, color: 'text-amber-600' },
+                { label: 'Período', val: filteredHistory.length, icon: Calendar, color: 'text-slate-400' }
+              ].map((card, i) => (
+                <div key={i} className={`p-4 sm:p-6 rounded-[1.5rem] border ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-100'}`}>
+                  <div className={`flex items-center gap-1.5 mb-2 ${card.color}`}><card.icon className="w-4 h-4" /><span className="text-[8px] font-black uppercase tracking-widest">{card.label}</span></div>
+                  <p className="text-2xl sm:text-4xl font-black">{card.val}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-4 pb-10">
+              <h3 className="text-base font-black px-2">Feedbacks Recentes</h3>
+              {filteredHistory.length === 0 ? (
+                <p className="text-center text-slate-400 py-10 text-sm">Nenhum feedback encontrado com os filtros atuais.</p>
+              ) : (
+                filteredHistory.slice(-5).reverse().map((h, i) => (
+                  <div key={i} className={`p-4 rounded-[1.5rem] border ${isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50/50 border-slate-100'}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-black text-white ${getNpsColor(h.nps || 0)}`}>NOTA {h.nps}</span>
+                        <span className="text-[9px] font-black uppercase tracking-widest text-indigo-600">{h.professional}</span>
+                      </div>
+                      <span className="text-[8px] font-bold text-slate-300">{new Date(h.timestamp).toLocaleDateString('pt-BR')}</span>
+                    </div>
+                    <p className="text-sm italic">"{h.comment || 'Sem comentários.'}"</p>
+                  </div>
+                ))
+              )}
+              <button onClick={() => setIsPromptingReset(true)} className="w-full py-5 text-[9px] font-black uppercase tracking-[0.3em] flex items-center justify-center gap-3 opacity-30 hover:opacity-100 transition-all hover:text-rose-500"><Trash2 className="w-4 h-4" /> Resetar Dados</button>
+            </div>
           </div>
         );
 
@@ -581,43 +728,28 @@ const App: React.FC = () => {
 
   return (
     <div className={`min-h-screen flex flex-col items-center justify-center p-3 sm:p-4 transition-colors duration-700 ${isDarkMode ? 'bg-[#050505]' : 'bg-slate-50'}`}>
-      <div className={`w-full max-w-xl rounded-[2.5rem] sm:rounded-[3rem] shadow-[0_20px_50px_rgba(0,0,0,0.1)] overflow-hidden relative border transition-all duration-700 ${isDarkMode ? 'bg-neutral-950 border-neutral-900 shadow-indigo-950/20' : 'bg-white/95 backdrop-blur-3xl border-white shadow-slate-200'}`}>
+      <div className={`w-full max-w-xl rounded-[2.5rem] shadow-2xl overflow-hidden relative border transition-all duration-700 ${isDarkMode ? 'bg-neutral-950 border-neutral-900' : 'bg-white border-white'}`}>
         
-        {/* Top Theme Control */}
-        <div className="absolute top-6 right-8 sm:top-8 sm:right-10 z-50">
-           <button 
-             onClick={() => setIsDarkMode(!isDarkMode)} 
-             className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl transition-all duration-300 transform active:scale-90 border shadow-sm ${isDarkMode ? 'bg-neutral-900 text-amber-400 border-neutral-800' : 'bg-white text-indigo-600 border-slate-100 hover:bg-slate-50'}`}
-           >
-             {isDarkMode ? <Sun className="w-4 h-4 sm:w-5 h-5" /> : <Moon className="w-4 h-4 sm:w-5 h-5" />}
+        <div className="absolute top-6 right-8 z-50">
+           <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2.5 rounded-xl border bg-white text-indigo-600 shadow-sm">
+             {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
            </button>
         </div>
 
         {step !== AppStep.WELCOME && step !== AppStep.PROCESSING && step !== AppStep.SUCCESS && (
-          <div className={`px-6 sm:px-10 pt-8 sm:pt-10 flex items-center transition-all duration-500`}>
-            <button onClick={handleBack} className={`p-2.5 sm:p-3 -ml-2 rounded-xl sm:rounded-2xl transition-all ${isDarkMode ? 'text-neutral-700 hover:bg-neutral-900 hover:text-neutral-400' : 'text-slate-300 hover:bg-slate-50 hover:text-slate-500'}`}>
-                <ArrowLeft className="w-5 h-5 sm:w-6 h-6" />
+          <div className="px-6 pt-8 flex items-center">
+            <button onClick={handleBack} className="p-2.5 rounded-xl text-slate-300 hover:text-slate-500 transition-all">
+                <ArrowLeft className="w-6 h-6" />
             </button>
-            <div className="flex gap-2 flex-1 mx-4 sm:mx-6 mr-10 sm:mr-14">
-              {!isPromptingPassword && step !== AppStep.DASHBOARD && [1, 2, 3].map((i) => {
-                const stepNum = step as number;
-                return (
-                  <div key={i} className={`h-1.5 sm:h-2 rounded-full transition-all duration-500 ${i <= stepNum ? 'w-8 sm:w-10 bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]' : (isDarkMode ? 'w-3 sm:w-4 bg-neutral-900' : 'w-3 sm:w-4 bg-slate-100')}`} />
-                );
-              })}
-              {(isPromptingPassword || step === AppStep.DASHBOARD) && <div className={`h-1.5 sm:h-2 w-full rounded-full overflow-hidden ${isDarkMode ? 'bg-neutral-900' : 'bg-indigo-50'}`}><div className="h-full w-full bg-indigo-600 animate-pulse"></div></div>}
-            </div>
           </div>
         )}
 
-        <div className={`transition-all duration-500 ${step === AppStep.DASHBOARD ? 'p-0' : 'p-6 sm:p-14'}`}>
+        <div className={step === AppStep.DASHBOARD ? 'p-0' : 'p-6 sm:p-14'}>
             {renderStepContent()}
         </div>
 
-        <div className={`p-4 sm:p-6 text-center border-t flex justify-center items-center gap-2 sm:gap-3 transition-colors duration-500 ${isDarkMode ? 'bg-black/50 border-neutral-900' : 'bg-slate-50/30 border-slate-100'}`}>
-           <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] sm:tracking-[0.4em] ${isDarkMode ? 'text-neutral-800' : 'text-slate-300'}`}>Santa Filomena</span>
-           <div className={`w-1 h-1 sm:w-1.5 sm:h-1.5 rounded-full ${isDarkMode ? 'bg-neutral-900' : 'bg-slate-200'}`} />
-           <p className={`text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] sm:tracking-[0.4em] ${isDarkMode ? 'text-neutral-800' : 'text-slate-300'}`}>RateFlow AI</p>
+        <div className={`p-4 text-center border-t flex justify-center items-center gap-3 ${isDarkMode ? 'bg-black/50 border-neutral-900' : 'bg-slate-50/30 border-slate-100'}`}>
+           <span className="text-[8px] font-black uppercase tracking-[0.4em] text-slate-300">Hospital Santa Filomena</span>
         </div>
       </div>
     </div>
